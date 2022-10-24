@@ -9,6 +9,7 @@ Jun 2017
 
 import glob
 from pathlib import Path
+import shutil
 
 import numpy as np
 import os
@@ -156,7 +157,14 @@ def timed_message(message):
     print(time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()) + ': ' + message)
 
 
-def normalize_mg_by_size(readcounts, contigs):
+def normalize_mg_by_size(readcounts, contigs): ##falar com Joao, precisar de criar os normalized readcounts, pois ele esta a alterar as de input.
+    from pathlib import Path
+    if os.path.exists('output/Quantification/') == False:
+        os.mkdir('output/Quantification/')
+    shutil.copy(readcounts,'output/Quantification/')
+    name = Path(readcounts).name
+    readcounts = f'output/Quantification/{name}'
+    print(readcounts)
     run_pipe_command(
         f"seqkit fx2tab {contigs} | sort | awk '{{print $1\"\\t\"length($2)}}' | "
         f"join - {readcounts} | awk '{{print $1\"\\t\"$3/$2}}'",
@@ -291,45 +299,53 @@ def generate_expression_matrix(readcount_files, header, output):
     expression_matrix.to_csv(output, sep='\t')
 
 
-def make_protein_report(out, exps):
-    for sample in set(exps['Sample']):
-        timed_message(f'Joining data for sample: {sample}')
-        report = pd.read_csv(f'{out}/Annotation/{sample}/reCOGnizer_results.tsv', sep='\t')
-        report = report.groupby('qseqid')[report.columns.tolist()[1:]].first().reset_index()
-        report = report[report['DB ID'].str.startswith('COG')].rename(columns={'DB ID': 'COG ID'})
-        report = pd.merge(pd.read_csv(f'{out}/Annotation/{sample}/UPIMAPI_results.tsv', sep='\t'), report, on='qseqid')
-        report = report.rename(columns={**{f'{col}_x': f'{col} (UPIMAPI)' for col in blast_cols},
-                                        **{f'{col}_y': f'{col} (reCOGnizer)' for col in blast_cols}})
-        report['Contig'] = report['qseqid'].apply(lambda x: x.split('_')[1])
-        mg_names = exps[(exps['Sample'] == sample) & (exps['Data type'] == 'dna')]['Name'].tolist()
-        mt_names = exps[(exps['Sample'] == sample) & (exps['Data type'] == 'mrna')]['Name'].tolist()
-        for mg_name in mg_names:
-            readcounts = pd.read_csv(
-                f'{out}/Quantification/{mg_name}.readcounts', sep='\t', header=None,
-                names=['Contig', mg_name])
-            normalize_mg_by_size(
-                f'{out}/Quantification/{mg_name}.readcounts', f'{out}/Assembly/{sample}/contigs.fasta')
-            norm_by_size = pd.read_csv(
-                f'{out}/Quantification/{mg_name}_normalized.readcounts', sep='\t', header=None,
-                names=['Contig', f'{mg_name} (Normalized by contig size)'])
-            for counts in [readcounts, norm_by_size]:
-                counts['Contig'] = counts['Contig'].apply(lambda x: x.split('_')[1])
-            report = pd.merge(report, readcounts, on='Contig', how='left')
-            report = pd.merge(report, norm_by_size, on='Contig', how='left')
-        for mt_name in mt_names:
-            readcounts = pd.read_csv(f'{out}/Quantification/{mt_name}.readcounts', sep='\t', header=None,
-                                     names=['qseqid', mt_name])
-            report = pd.merge(report, readcounts, on='qseqid', how='left')
-        report[mg_names + mt_names] = report[mg_names + mt_names].fillna(value=0).astype(int)
-        report[[f'{name} (Normalized by contig size)' for name in mg_names]] = report[
-            [f'{name} (Normalized by contig size)' for name in mg_names]].fillna(value=0)
-        multi_sheet_excel(f'{out}/MOSCA_Protein_Report.xlsx', report, sheet_name=sample)
+def make_protein_report(Upimapi, reCognizer, readcounts_input, exps, sample, contigs):
+    timed_message(f'Joining data for sample: {sample}')
+    report = pd.read_csv(reCognizer, sep='\t')
+    report = report.groupby('qseqid')[report.columns.tolist()[1:]].first().reset_index()
+    report = report[report['DB ID'].str.startswith('COG')].rename(columns={'DB ID': 'COG ID'})
+    report = pd.merge(pd.read_csv(Upimapi, sep='\t'), report, on='qseqid')
+    report = report.rename(columns={**{f'{col}_x': f'{col} (UPIMAPI)' for col in blast_cols},
+                                    **{f'{col}_y': f'{col} (reCOGnizer)' for col in blast_cols}})
+    report['Contig'] = report['qseqid'].apply(lambda x: x.split('_')[1])
+    mg_names = exps[(exps['Sample'] == sample) & (exps['Data type'] == 'dna')]['Name'].tolist()
+    mt_names = exps[(exps['Sample'] == sample) & (exps['Data type'] == 'mrna')]['Name'].tolist()
+    for mg_name in mg_names:
+        for i in readcounts_input:
+                if i == f"input/{mg_name}.readcounts" or i == f"output/Quantification/{mg_name}.readcounts":
+                    mg_we_need = i
+        readcounts = pd.read_csv(
+            mg_we_need, sep='\t', header=None,
+            names=['Contig', mg_name])
+        normalize_mg_by_size(
+            mg_we_need, contigs)
+        norm_by_size = pd.read_csv(
+            f'output/Quantification/{mg_name}_normalized.readcounts', sep='\t', header=None,
+            names=['Contig', f'{mg_name} (Normalized by contig size)'])
+        for counts in [readcounts, norm_by_size]:
+            counts['Contig'] = counts['Contig'].apply(lambda x: x.split('_')[1])
+        report = pd.merge(report, readcounts, on='Contig', how='left')
+        report = pd.merge(report, norm_by_size, on='Contig', how='left')
+    for mt_name in mt_names:
+        for i in readcounts_input:
+                if i == f"input/{mt_name}.readcounts" or i == f"output/Quantification/{mt_name}.readcounts":
+                    mt_we_need = i
+        readcounts = pd.read_csv(mt_we_need, sep='\t', header=None,
+                                    names=['qseqid', mt_name])
+        report = pd.merge(report, readcounts, on='qseqid', how='left')
+    report[mg_names + mt_names] = report[mg_names + mt_names].fillna(value=0).astype(int)
+    report[[f'{name} (Normalized by contig size)' for name in mg_names]] = report[
+        [f'{name} (Normalized by contig size)' for name in mg_names]].fillna(value=0)
+    multi_sheet_excel('output/MOSCA_Protein_Report.xlsx', report, sheet_name=sample)
 
 
-def make_entry_report(protein_report, out, exps):
+def make_entry_report(protein_report, out, exps, Upimapi_input):
     for sample in set(exps['Sample']):
+        for i in Upimapi_input:
+                if i == f"input/{sample}_UPIMAPI_results.tsv" or i == f"output/Annotation/{sample}/UPIMAPI_results.tsv":
+                    Upimapi = i
         report = pd.read_excel(protein_report, sheet_name=sample)
-        upimapi_res = pd.read_csv(f'{out}/Annotation/{sample}/UPIMAPI_results.tsv', sep='\t')
+        upimapi_res = pd.read_csv(Upimapi, sep='\t')
         uniprot_cols = [col for col in upimapi_res.columns if col not in blast_cols]
         taxonomy_columns = [col for col in upimapi_res.columns if 'Taxonomic lineage (' in col]
         functional_columns = [

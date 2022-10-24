@@ -17,7 +17,7 @@ import os
 import pathlib
 import time
 from subprocess import check_output, DEVNULL
-from mosca_tools import run_command, run_pipe_command, parse_fastqc_report, fastqc_name
+from mosca_tools import run_command, run_pipe_command, parse_fastqc_report
 
 
 class Preprocesser:
@@ -74,6 +74,10 @@ class Preprocesser:
         else:
             return [adapter for adapter in adapters if 'SE' in adapter]
 
+    def fastqc_name(self, filename):
+        return filename.replace("stdin:", "").replace(".gz", "").replace(".bz2", "").replace(".txt", "").replace(
+            ".fastq", "").replace(".fq", "").replace(".csfastq", "").replace(".sam", "").replace(".bam", "")
+
     def download_resources(self, resources_directory):
         if not os.path.isfile(f'{resources_directory}/downloaded_timestamp.txt'):
             run_pipe_command(
@@ -92,7 +96,7 @@ class Preprocesser:
     def remove_adapters(self, files, out_dir, name, adapters, threads='12'):
         adapter_contaminated = False
         for file in files:
-            folder = fastqc_name(file.split('/')[-1])
+            folder = self.fastqc_name(file.split('/')[-1])
             if self.has_adapters(f'{out_dir}/FastQC/{folder}_fastqc/fastqc_data.txt'):
                 adapter_contaminated = True
         if not adapter_contaminated:  # No files had adapters
@@ -127,15 +131,11 @@ class Preprocesser:
     def rrna_removal(self, reads, out_dir, name, databases, indexes_dir, tmp_dir, threads=12):
         if os.path.isdir(tmp_dir):
             shutil.rmtree(tmp_dir)
-        run_pipe_command(
+        run_command(
             f"sortmerna -ref {' -ref '.join(databases)} --reads {' --reads '.join(reads)} --idx-dir {indexes_dir} "
             f"--workdir {tmp_dir} --aligned {out_dir}/rrna_{name} --other {out_dir}/norrna_{name} -out2 --fastx "
-            f"--paired_in --threads {threads} 1>{out_dir}/{name}_sortmerna.log 2>{out_dir}/{name}_sortmerna.err")
+            f"--paired_in --threads {threads}", verbose=False)
         shutil.rmtree(tmp_dir)
-        not_compressed = glob(f'{out_dir}/*.fq')
-        if len(not_compressed) > 0:
-            for file in not_compressed:
-                run_pipe_command(f'gzip {file}')
 
     def get_crop(self, data):
         data = data['Per base sequence quality'][1]
@@ -164,7 +164,7 @@ class Preprocesser:
     # Trimmomatic - removal of low quality regions and short reads
     def quality_trimming(self, files, out_dir, name, threads='12', minlen='100', avgqual='20', type_of_data='dna'):
         fastqc_reports = [
-            f"{out_dir}/FastQC/{fastqc_name(file.split('/')[-1])}_fastqc/fastqc_data.txt" for file in files]
+            f"{out_dir}/FastQC/{self.fastqc_name(file.split('/')[-1])}_fastqc/fastqc_data.txt" for file in files]
         crop = float('inf')
         headcrop = 0
         for report in fastqc_reports:
@@ -198,7 +198,7 @@ class Preprocesser:
         pass
 
     def remove_intermediates(self, out_dir):
-        for file in (glob(f'{out_dir}/Trimmomatic/noadapters_*.fq') + glob(f'{out_dir}/SortMeRNA/norrna_*.fq.gz')):
+        for file in (glob(f'{out_dir}/Trimmomatic/noadapters_*.fq') + glob(f'{out_dir}/SortMeRNA/norrna_*.fastq')):
             os.remove(file)
             print(f'Removed intermediate file: {file}')
 
@@ -209,13 +209,13 @@ class Preprocesser:
                 [f'{args.resources_directory}{f}' for f in ['/adapters', '/rRNA_databases']]:
             pathlib.Path(directory).mkdir(parents=True, exist_ok=True)
         if args.name is None:
-            name = fastqc_name(args.input[0].split('/')[-1])
+            name = self.fastqc_name(args.input[0].split('/')[-1])
             if '_R' in name:
                 name = name.split('_R')[0]
         else:
             name = args.name
         self.paired = len(args.input) > 1
-
+        '''
         # First quality check
         self.run_fastqc(args.input, f'{args.output}/FastQC', threads=args.threads)
 
@@ -250,11 +250,11 @@ class Preprocesser:
                 args.input, f'{args.output}/SortMeRNA', name, rrna_databases, rrna_databases_dir,
                 tmp_dir=args.temporary_directory, threads=args.threads)
 
-            args.input = ([f'{args.output}/SortMeRNA/norrna_{name}_{fr}.fq.gz' for fr in ['fwd', 'rev']] if
-                          self.paired else [f'{args.output}/SortMeRNA/norrna_{name}.fq.gz'])
+            args.input = ([f'{args.output}/SortMeRNA/norrna_{name}_{fr}.fq' for fr in ['fwd', 'rev']] if
+                          self.paired else [f'{args.output}/SortMeRNA/norrna_{name}.fq'])
 
         self.run_fastqc(args.input, f'{args.output}/FastQC', threads=args.threads)
-
+        '''
         self.quality_trimming(args.input, args.output, name, threads=args.threads, avgqual=args.avgqual,
                               minlen=args.minlen, type_of_data=args.data)
 
